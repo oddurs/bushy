@@ -4,7 +4,8 @@ Research notes, August 2026. What actually breaks in a browser camera app, which
 applies here, and what it would cost to fix. Findings are ranked by how likely they are to
 bite a real user, not by how interesting they are.
 
-Nothing here is implemented yet — this is the survey.
+**All of it is now implemented.** Each finding below carries what was done. The suite in
+`tests/` covers the ones that can be tested headlessly — 17 tests, ~9 s, run on every push.
 
 ---
 
@@ -41,9 +42,10 @@ Safari also ties the media environment to the top frame's URL, so
 frame. The shutter is still armed. They tap it, get a countdown, a flash, and a photo of a
 stale image — or a black one. Nothing tells them anything is wrong.
 
-**Fix.** Listen for `ended` on the track and for `visibilitychange`. On either, drop to a
-distinct `paused` state with a "Camera stopped — tap to resume" affordance that re-runs
-`startCamera()`. Cheap, and it removes the single worst failure in the app.
+**Done.** The track's `ended` event and `visibilitychange` both drop the app into a
+`paused` state with a Resume button. `shoot()` also refuses to start if the track isn't
+live. Two tests cover it — note that calling `track.stop()` yourself deliberately does *not*
+fire `ended` per spec, so the visibility check is what catches the backgrounding case.
 
 ### 2. No timeout on the MediaPipe load
 
@@ -51,14 +53,17 @@ distinct `paused` state with a "Camera stopped — tap to resume" affordance tha
 `AbortController`. The spinner says "Warming up…" forever if jsDelivr is slow, blocked by a
 corporate proxy, or unreachable.
 
-**Fix.** `Promise.race` the load against a ~20 s timeout, then show a real error with a
-Retry button. Ten lines.
+**Done.** `withTimeout()` races both the camera and the model against 25 s, and any
+failure lands in an error state with a working Retry.
 
 ### 3. The error state has no way out
 
-`cameraProblem()` writes decent messages but two of them literally end in "and reload",
-which is asking the user to do the recovery by hand. There is no retry button anywhere in
-the markup. Every terminal state should offer the action that might fix it.
+`cameraProblem()` wrote decent messages but two of them literally ended in "and reload",
+which is asking the user to do the recovery by hand.
+
+**Done.** A single `halt(state, message, label, action)` helper drives every dead end, and
+the overlay now carries a button wired to whatever action might fix it. `OverconstrainedError`
+got a message too. Asserted by test.
 
 ### 4. The CDN is a single point of failure — and unpinned trust
 
@@ -86,8 +91,11 @@ code change — **but the files must be published without renaming**.
 
 **One caveat worth respecting:** there are reports that
 [MediaPipe task files served from your own server fail on iOS below 16 while working fine from a CDN](https://github.com/google-ai-edge/mediapipe/issues/5767).
-If self-hosting, keep the CDN as a fallback rather than deleting it, and verify on an old
-device before switching the default.
+
+**Done.** SIMD runtime and model vendored into `vendor/mediapipe` (15.3 MB) and loaded
+first; the CDN stays wired as an automatic fallback, which covers both that iOS caveat and
+pre-SIMD devices, since the missing no-SIMD binary 404s straight into the fallback path. A
+test asserts the app boots making *no* third-party requests at all.
 
 ---
 
@@ -100,8 +108,8 @@ innerWidth` at boot. Rotate afterwards and the stream keeps the old shape, so th
 crop takes a narrow slice of it — exactly the failure the orientation-aware constraint was
 added to prevent. The preview still looks fine, which is what makes it easy to miss.
 
-**Fix.** Re-request the stream on `orientationchange`, debounced, and only when the
-orientation class actually flips.
+**Done.** A debounced `resize` listener re-requests the stream, but only when the
+orientation class actually flips and only while live.
 
 ### 6. iOS canvas memory is a real ceiling
 
@@ -120,17 +128,18 @@ freely: `buildOccluders` creates **two scratch canvases per face per build** (`b
 `brow.js:339`), and with `numFaces: 5` that is ten, none of them explicitly released.
 Safari's accounting is known to lag garbage collection.
 
-**Fix.** Set `canvas.width = canvas.height = 0` on scratch canvases once their pixels have
-been read — the documented way to return the memory immediately. Wrap every `getImageData`
-in a try/catch that degrades to "no occluders" rather than failing the whole build. There
-are six `getImageData` calls across `brow.js` and `warp.js`; none is currently guarded.
+**Done.** All six reads go through a shared `readPixels()` that returns null instead of
+throwing, and every caller degrades one feature rather than failing the build. Scratch
+canvases are zeroed the moment their pixels are copied out, and each brow exposes
+`dispose()` for its occluder layer, called whenever brows are replaced or discarded.
 
 ### 7. `grabFrame` trusts the video element
 
 `startCamera` waits for `videoWidth` (`app.js:89`) but `grabFrame` reads it unguarded
 (`app.js:167`). If the track died between boot and shutter — see finding 1 — `vw`/`vh` are
-0, the crop maths produces zeros, and the canvas ends up 1×1. Guard it and fail into the
-paused state.
+0, the crop maths produces zeros, and the canvas ends up 1×1.
+
+**Done.** `grabFrame()` returns false on a dead element and the caller drops to paused.
 
 ### 8. Two full detections per shot
 
@@ -139,50 +148,59 @@ re-measuring the warped photo is easier to reason about than pushing landmarks t
 displacement field. That was the right call for correctness, but it doubles the most
 expensive step, and detection is the one cost never measured on a real phone.
 
-**Before optimising, measure it.** If detection turns out to be 200 ms+ on a mid-range
-Android, the fix is to map the landmarks forward through the field analytically — the field
-is `dest(p) = src(p - f(p))`, so a landmark at `p` lands near `p + f(p)`, which is one
-Gaussian evaluation per landmark instead of a whole second inference. If detection is 40 ms,
-leave it alone.
+**Done — the second pass is gone.** Landmarks are now carried through the same field
+analytically. The warp is `dest(p) = src(p - f(p))`, so a feature from `q` appears at the
+`p` satisfying `p = q + f(p)`.
+
+Evaluating `f` at `q` once — the obvious approach — is wrong by roughly `|grad f| · |f|`,
+which works out to a few pixels near a control: enough to visibly shift a brow. Three
+fixed-point passes drive the residual **under 0.01 px**, asserted by test at both normal and
+2.5× warp strength, for a few hundred `exp()` calls instead of a whole second inference.
+
+`?redetect=1` restores the old two-pass path for comparison.
 
 ---
 
 ## Tier 3 — structural
 
-### 9. There are no automated tests
+### 9. Automated tests
 
-This is the largest single gap, and the groundwork is already done. `demo.js` paints a
-synthetic face from a seeded PRNG and runs the *real* pipeline over it, so renders are
-byte-reproducible — verified earlier by hashing the same seed twice.
+The largest gap, and the groundwork was already there: `demo.js` paints a synthetic face
+from a seeded PRNG and runs the *real* pipeline over it, so results are reproducible.
 
-That is a regression suite waiting to be written:
+**Done.** `tests/pipeline.test.mjs` — 17 tests, ~9 s, `node --test`, on every push via
+GitHub Actions. It asserts measurements rather than golden images: canvas antialiasing
+differs subtly between platforms, and a suite that goes red when you change machine gets
+ignored.
 
-- **Metric assertions** on `window.__demo`, which already exposes everything needed:
-  sampled colour within tolerance of the painted colour; `waviness` strictly higher for
-  `&wavy=1` than the straight case; `suspect` true for `&rim=252` and false otherwise;
-  `occluded` materially higher with `&glasses=1` than without.
-- **Golden images** — hash the `#shot` canvas across a fixed matrix of seeds and flags,
-  fail on drift, and write the new images to an artifact directory for eyeballing.
-- **Lifecycle tests** with Playwright's fake camera: permission denied, no device, and
-  (once implemented) track-ended recovery.
+| Group | Covers |
+| --- | --- |
+| measurement | brow colour vs painted truth (dark and light), tone landing between brow and scalp, curly measuring wavier than straight |
+| glasses | rim below the brow doesn't darken the reading; frames raise occlusion; a rim *across* the brow is rejected and the fallback clears the plausibility floor |
+| warp | forward-map residual sub-pixel at 1× and 2.5×; warp disengages cleanly |
+| variation | a seed reproduces exactly; different seeds differ; strand count stays bounded |
+| lifecycle | boots with zero third-party requests, denied camera, dead track, externally ended track, phone-viewport crop matches framing |
 
-All of it runs headless in CI on the fixed seeds. No device farm needed for the maths —
-only for the iOS quirks in Tier 1.
+One wrinkle worth recording: the first version hashed a Playwright element screenshot and
+flaked, because under concurrent page load Chromium can switch rasterisation paths and
+change antialiasing. Hashing the canvas backing store via `toDataURL()` instead measures
+only what we drew, and has been stable across every run since.
 
-### 10. No startup validation of landmark indices
+### 10. Startup validation of landmark indices
 
-`brow.js` and `warp.js` hardcode mesh indices (`70`, `107`, `159`, `234`…). The version is
-pinned, so they will not move — but a future upgrade would fail as a subtly misplaced brow
-rather than a loud error. A one-line assertion at boot that the required indices exist in
-the first detection would turn a silent visual bug into a clear one.
+`brow.js` and `warp.js` hardcode mesh indices. The version is pinned, so they will not move
+— but a future upgrade would have failed as a subtly misplaced brow rather than a loud
+error.
+
+**Done.** Both modules export their `REQUIRED` index list, and the first detection of each
+session is checked against the union. A missing index halts with a clear message.
 
 ### 11. Offline
 
-Everything after load is local — no network is touched during a shot. If the runtime is
-self-hosted (finding 4), a service worker caching the shell plus the WASM and model would
-make the app fully offline and eliminate cold-start latency on repeat visits. Not worth the
-complexity while the CDN is a runtime dependency, since that's the part that would still
-fail.
+**Done by side effect.** With the runtime vendored, the app already touches no network
+after the initial page load — verified by the zero-third-party-request test. A service
+worker would additionally survive being offline at *first* load; that's the only remaining
+increment, and it isn't worth a cache-invalidation story yet.
 
 ---
 
@@ -198,13 +216,12 @@ fail.
 
 ## Suggested order
 
-1. Track-`ended` / visibility recovery, plus a `paused` state (finding 1, 7)
-2. Load timeout and a Retry button on every terminal state (2, 3)
-3. Guard every `getImageData`; release scratch canvases (6)
-4. Re-request the stream on orientation change (5)
-5. Playwright metric + golden-image suite in CI (9)
-6. Measure `detect()` on a real phone, then decide about the second pass (8)
-7. Self-host the runtime with the CDN as fallback (4)
+Everything above is done. What is left is the part no headless browser can answer:
 
-Items 1–4 are each well under an hour and cover every failure a user is realistically going
-to hit. Item 5 is what stops the rest from regressing.
+- **Real iOS Safari.** The bfcache/`ended` behaviour, the share sheet, `dvh`, and the audio
+  unlock are all implemented against documented WebKit behaviour and tested in Chromium.
+  They are reasoned, not confirmed on device.
+- **A pre-SIMD or iOS-15 device**, to confirm the CDN fallback actually engages rather than
+  merely being wired up.
+- **`landmarker.detect()` on a mid-range Android.** Still the one unmeasured cost. It now
+  runs once per shot instead of twice, so the exposure is halved either way.

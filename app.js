@@ -1,10 +1,20 @@
-import { FilesetResolver, FaceLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.mjs";
-import { buildUnibrow } from "./brow.js";
-import { distortFace } from "./warp.js";
+import { buildUnibrow, REQUIRED as BROW_INDICES } from "./brow.js";
+import { distortFace, mapLandmarks, REQUIRED as WARP_INDICES } from "./warp.js";
 import { shotSeed } from "./rng.js";
 
-const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
-const MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+// Self-hosted first so the app doesn't depend on a third party staying up, with
+// the CDN as fallback: MediaPipe is reported to fail when served from your own
+// origin on iOS below 16, and the vendored copy carries only the SIMD runtime,
+// so pre-SIMD devices need the CDN too.
+const LOCAL = "vendor/mediapipe";
+const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1";
+const SOURCES = [
+  { wasm: `${LOCAL}/wasm`, model: `${LOCAL}/face_landmarker.task`, name: "local" },
+  { wasm: `${CDN}/wasm`, model: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", name: "cdn" },
+];
+const BUNDLES = [`./${LOCAL}/vision_bundle.mjs`, `${CDN}/vision_bundle.mjs`];
+
+const LOAD_TIMEOUT = 25000;
 
 // Caps the captured photo's longest side. Phone cameras will happily hand over
 // something enormous, and every downstream cost -- the warp, the strand count,
@@ -20,6 +30,7 @@ const ctx = shot.getContext("2d", { willReadFrequently: true });
 const els = {
   count: $("count"), flash: $("flash"), msg: $("overlay-msg"), status: $("status"),
   shoot: $("shoot"), retake: $("retake"), download: $("download"), flip: $("flip"),
+  action: $("action"),
 };
 
 const params = new URLSearchParams(location.search);
@@ -34,6 +45,7 @@ const OPTS = {
   dip: num("dip", undefined),
 };
 const WARP = num("warp", 1);
+const REDETECT = params.has("redetect");
 
 // The clean photo, kept aside so the reveal can repaint from scratch each frame.
 const original = document.createElement("canvas");
@@ -43,27 +55,99 @@ let landmarker = null;
 let stream = null;
 let facing = "user";
 let mirrored = true;
+let portrait = innerHeight >= innerWidth;
 let faces = [];   // landmarks of the distorted photo, one entry per person
 let brows = [];
 let seed = 0;     // one seed per shot, driving both the warp and the hair
+let onAction = null;
+let indicesChecked = false;
 
 const setState = (s) => { stage.dataset.state = s; };
 const say = (t) => { els.status.textContent = t; };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Every dead end offers the action that might get out of it. Telling someone to
+// "reload" and leaving them to do it by hand is not a recovery path.
+function halt(state, msg, label, action) {
+  setState(state);
+  els.msg.textContent = msg;
+  onAction = action || null;
+  els.action.hidden = !action;
+  if (action) els.action.textContent = label;
+}
+
+els.action.addEventListener("click", () => {
+  const run = onAction;
+  onAction = null;
+  els.action.hidden = true;
+  run?.();
+});
+
+function withTimeout(promise, ms, what) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} timed out`)), ms);
+    }),
+  ]);
+}
+
 // ---------------------------------------------------------------- boot
 
 async function loadLandmarker() {
-  const fileset = await FilesetResolver.forVisionTasks(MP);
-  const make = (delegate) => FaceLandmarker.createFromOptions(fileset, {
-    baseOptions: { modelAssetPath: MODEL, delegate },
-    runningMode: "IMAGE",
-    numFaces: 5,
-  });
+  let lastErr;
+  for (let i = 0; i < SOURCES.length; i++) {
+    try {
+      const { FilesetResolver, FaceLandmarker } = await import(BUNDLES[i]);
+      const fileset = await FilesetResolver.forVisionTasks(SOURCES[i].wasm);
+      const make = (delegate) => FaceLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: SOURCES[i].model, delegate },
+        runningMode: "IMAGE",
+        numFaces: 5,
+      });
+      try {
+        return await make("GPU");
+      } catch {
+        return await make("CPU");
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr ?? new Error("no face model available");
+}
+
+function watchTrack() {
+  const track = stream?.getVideoTracks()[0];
+  if (!track) return;
+  // WebKit stops capture tracks when a page goes into the back/forward cache and
+  // delivers 'ended' if it is ever restored. Without this the preview freezes on
+  // a stale frame while the shutter stays armed.
+  track.addEventListener("ended", () => {
+    if (stage.dataset.state === "result") return;
+    pauseCamera("The camera stopped.");
+  }, { once: true });
+}
+
+function cameraLive() {
+  const track = stream?.getVideoTracks()[0];
+  return !!track && track.readyState === "live" && video.videoWidth > 0;
+}
+
+function pauseCamera(msg) {
+  halt("paused", msg, "Resume", resume);
+}
+
+async function resume() {
+  halt("loading", "Reconnecting…", null, null);
   try {
-    return await make("GPU");
-  } catch {
-    return await make("CPU");
+    await withTimeout(startCamera(), LOAD_TIMEOUT, "Camera");
+    setState("live");
+    els.shoot.disabled = false;
+    say("");
+  } catch (err) {
+    halt("error", cameraProblem(err), "Try again", resume);
   }
 }
 
@@ -72,7 +156,7 @@ async function startCamera(mode = facing) {
   // Ask for a stream shaped like the screen. Without this a portrait phone gets
   // a landscape stream, and cropping it to a tall frame throws away most of the
   // pixels -- leaving too little face to measure a brow from.
-  const portrait = innerHeight >= innerWidth;
+  portrait = innerHeight >= innerWidth;
   stream = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: mode,
@@ -89,6 +173,7 @@ async function startCamera(mode = facing) {
   if (!video.videoWidth) {
     await new Promise((r) => video.addEventListener("loadedmetadata", r, { once: true }));
   }
+  watchTrack();
 }
 
 async function offerFlip() {
@@ -108,10 +193,11 @@ function cameraProblem(err) {
     return "Cameras only work over https:// or on localhost.";
   }
   switch (err?.name) {
-    case "NotAllowedError": return "No camera access, no caterpillar. Allow the camera and reload.";
+    case "NotAllowedError": return "No camera access, no caterpillar. Allow the camera, then try again.";
     case "NotFoundError": return "No camera found on this device.";
-    case "NotReadableError": return "Something else is holding the camera — close it and reload.";
-    default: return `Couldn't start: ${err?.message || err}`;
+    case "NotReadableError": return "Something else is holding the camera. Close it, then try again.";
+    case "OverconstrainedError": return "This camera can't do what was asked of it.";
+    default: return err?.message || "Something went wrong starting up.";
   }
 }
 
@@ -121,18 +207,20 @@ async function boot() {
     return runDemo({ stage, shot, ctx, original, octx, setState, say, opts: OPTS });
   }
 
+  halt("loading", "Warming up…", null, null);
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("no getUserMedia");
-    const camera = startCamera();
-    els.msg.textContent = "Warming up…";
-    [landmarker] = await Promise.all([loadLandmarker(), camera]);
+    const camera = withTimeout(startCamera(), LOAD_TIMEOUT, "Camera");
+    [landmarker] = await Promise.all([
+      withTimeout(loadLandmarker(), LOAD_TIMEOUT, "Face model"),
+      camera,
+    ]);
     setState("live");
     els.shoot.disabled = false;
     say("");
     offerFlip();
   } catch (err) {
-    setState("error");
-    els.msg.textContent = cameraProblem(err);
+    halt("error", cameraProblem(err), "Try again", () => boot());
   }
 }
 
@@ -165,9 +253,11 @@ function unlockAudio() {
 
 function grabFrame() {
   const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return false;
+
   // Reproduce the object-fit: cover crop exactly, so the saved photo is the
   // photo that was framed rather than the whole sensor.
-  const aspect = stage.clientWidth / stage.clientHeight;
+  const aspect = (stage.clientWidth || vw) / (stage.clientHeight || vh);
   let sw = vw, sh = vh;
   if (vw / vh > aspect) sw = vh * aspect;
   else sh = vw / aspect;
@@ -184,9 +274,16 @@ function grabFrame() {
   octx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
   octx.restore();
   ctx.drawImage(original, 0, 0);
+  return true;
+}
+
+function discardBrows() {
+  for (const b of brows) b.dispose?.();
+  brows = [];
 }
 
 function rebuild() {
+  discardBrows();
   brows = faces
     // Offset per face so two people in one shot don't grow identical hair.
     .map((lm, i) => buildUnibrow(octx, lm, original.width, original.height,
@@ -212,7 +309,21 @@ function reveal(duration = 950) {
   });
 }
 
+// One loud failure beats a subtly misplaced brow if the mesh ever changes.
+function checkIndices(lm) {
+  if (indicesChecked) return true;
+  const missing = [...new Set([...BROW_INDICES, ...WARP_INDICES])].filter((i) => !lm[i]);
+  indicesChecked = true;
+  if (missing.length) {
+    halt("error", `Face model returned an unexpected mesh (missing ${missing.length} points).`, null, null);
+    return false;
+  }
+  return true;
+}
+
 async function shoot() {
+  if (!cameraLive()) return pauseCamera("The camera stopped.");
+
   els.shoot.disabled = true;
   unlockAudio();
   setState("counting");
@@ -226,7 +337,7 @@ async function shoot() {
     await wait(900);
   }
 
-  grabFrame();
+  if (!grabFrame()) return pauseCamera("The camera stopped mid-shot.");
   setState("shot");
   els.flash.classList.add("fire");
   beep(1250);
@@ -237,21 +348,37 @@ async function shoot() {
   els.msg.textContent = "Cultivating…";
   await wait(30);
 
+  let found;
+  try {
+    found = landmarker.detect(original)?.faceLandmarks ?? [];
+  } catch (err) {
+    halt("error", `Couldn't read the photo: ${err?.message || err}`, "Try again", () => {
+      els.shoot.disabled = false;
+      setState("live");
+    });
+    return;
+  }
+
+  if (found.length && !checkIndices(found[0])) return;
+
   // Everyone in frame gets one. Each is measured off its own brows and its own
   // head, so a group shot doesn't end up sharing one person's hair.
-  const found = landmarker.detect(original)?.faceLandmarks ?? [];
-
-  // Distort first, then look again. Re-measuring the warped photo is cheaper to
-  // reason about than pushing the old landmarks through the displacement field,
-  // and it keeps the brow sitting exactly where the new face is.
   seed = OPTS.seed ?? shotSeed();
   let warped = false;
-  found.forEach((lm, i) => {
-    warped = distortFace(octx, lm, original.width, original.height, WARP,
-      (seed ^ (i * 0x85ebca6b)) >>> 0) || warped;
+  faces = found.map((lm, i) => {
+    const cs = distortFace(octx, lm, original.width, original.height, WARP,
+      (seed ^ (i * 0x85ebca6b)) >>> 0);
+    if (!cs) return lm;
+    warped = true;
+    // Carry the landmarks through the same field rather than running a second
+    // inference over the warped photo. Detection is the most expensive step in
+    // the pipeline, and this is a few hundred exp() calls.
+    return REDETECT ? lm : mapLandmarks(cs, lm, original.width, original.height);
   });
-  if (warped) ctx.drawImage(original, 0, 0);
-  faces = warped ? (landmarker.detect(original)?.faceLandmarks ?? found) : found;
+  if (warped) {
+    ctx.drawImage(original, 0, 0);
+    if (REDETECT) faces = landmarker.detect(original)?.faceLandmarks ?? found;
+  }
 
   rebuild();
 
@@ -269,6 +396,33 @@ async function shoot() {
   els.retake.hidden = els.download.hidden = false;
 }
 
+// ---------------------------------------------------------------- lifecycle
+
+// Coming back from the background is the common way to find a dead camera:
+// Safari stops the track, and the frozen last frame looks perfectly fine.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  const state = stage.dataset.state;
+  if (state !== "live" && state !== "counting") return;
+  if (!cameraLive()) pauseCamera("The camera stopped while you were away.");
+  else video.play().catch(() => pauseCamera("The camera stopped while you were away."));
+});
+
+// The stream is requested in the screen's orientation, so a rotation leaves it
+// the wrong shape and the cover crop starts throwing away most of the frame.
+let rotateTimer;
+addEventListener("resize", () => {
+  const now = innerHeight >= innerWidth;
+  if (now === portrait || stage.dataset.state !== "live") return;
+  clearTimeout(rotateTimer);
+  rotateTimer = setTimeout(() => {
+    if (stage.dataset.state !== "live") return;
+    startCamera().catch(() => pauseCamera("The camera stopped."));
+  }, 400);
+});
+
+addEventListener("pagehide", () => stream?.getTracks().forEach((t) => t.stop()));
+
 // ---------------------------------------------------------------- controls
 
 els.shoot.addEventListener("click", shoot);
@@ -278,18 +432,19 @@ els.flip.addEventListener("click", async () => {
   try {
     await startCamera(facing === "user" ? "environment" : "user");
   } catch {
-    await startCamera(facing).catch(() => {});
+    await startCamera(facing).catch(() => pauseCamera("Couldn't switch camera."));
   }
   els.flip.disabled = false;
 });
 
 els.retake.addEventListener("click", () => {
   faces = [];
-  brows = [];
-  setState("live");
-  els.shoot.disabled = false;
+  discardBrows();
   els.retake.hidden = els.download.hidden = true;
   say("");
+  if (!cameraLive()) return pauseCamera("The camera stopped.");
+  setState("live");
+  els.shoot.disabled = false;
 });
 
 function filename() {
@@ -326,8 +481,10 @@ els.download.addEventListener("click", async () => {
 addEventListener("keydown", (e) => {
   if (e.code !== "Space" && e.code !== "Enter") return;
   e.preventDefault();
-  if (stage.dataset.state === "live" && !els.shoot.disabled) shoot();
-  else if (stage.dataset.state === "result") els.retake.click();
+  const state = stage.dataset.state;
+  if (state === "live" && !els.shoot.disabled) shoot();
+  else if (state === "result") els.retake.click();
+  else if ((state === "paused" || state === "error") && !els.action.hidden) els.action.click();
 });
 
 boot();

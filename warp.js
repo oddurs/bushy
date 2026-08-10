@@ -11,6 +11,7 @@
 // falloff, so there are no triangle seams to hide.
 
 import { mulberry32 } from "./rng.js";
+import { readPixels } from "./brow.js";
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -31,7 +32,8 @@ const LID_L = [386, 374];
 const EAR_R = 234;
 const EAR_L = 454;
 
-const need = [NOSE_TIP, CHIN, HEAD_TOP, MOUTH_L, MOUTH_R, ...EYE_R, ...EYE_L];
+export const REQUIRED = [NOSE_TIP, CHIN, HEAD_TOP, MOUTH_L, MOUTH_R, ...EYE_R, ...EYE_L];
+const need = REQUIRED;
 
 function controls(lm, w, h, amount, rnd) {
   // Vary the strength of every cue, and which way the asymmetric ones point, so
@@ -121,13 +123,14 @@ function controls(lm, w, h, amount, rnd) {
 }
 
 /**
- * Warp the face in `ctx` in place. Returns true if anything was applied.
+ * Warp the face in `ctx` in place. Returns the control set that was applied
+ * (pass it to `mapLandmarks`), or null if nothing was done.
  * `amount` scales every offset; 1 is the intended subtlety.
  */
 export function distortFace(ctx, lm, w, h, amount = 1, seed = 0x5eed1e) {
-  if (amount <= 0 || need.some((i) => !lm[i])) return false;
+  if (amount <= 0 || need.some((i) => !lm[i])) return null;
   const cs = controls(lm, w, h, amount, mulberry32(seed));
-  if (!cs) return false;
+  if (!cs) return null;
 
   // Only touch the region any control can reach.
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -139,9 +142,10 @@ export function distortFace(ctx, lm, w, h, amount = 1, seed = 0x5eed1e) {
   x0 = clamp(Math.floor(x0), 0, w - 1); y0 = clamp(Math.floor(y0), 0, h - 1);
   x1 = clamp(Math.ceil(x1), 1, w); y1 = clamp(Math.ceil(y1), 1, h);
   const bw = x1 - x0, bh = y1 - y0;
-  if (bw < 8 || bh < 8) return false;
+  if (bw < 8 || bh < 8) return null;
 
-  const img = ctx.getImageData(x0, y0, bw, bh);
+  const img = readPixels(ctx, x0, y0, bw, bh);
+  if (!img) return null;
   const src = new Uint8ClampedArray(img.data);   // untouched copy to sample from
   const out = img.data;
 
@@ -185,5 +189,49 @@ export function distortFace(ctx, lm, w, h, amount = 1, seed = 0x5eed1e) {
   }
 
   ctx.putImageData(img, x0, y0);
-  return true;
+  return cs;
+}
+
+/** Displacement of the field at an image-space point. */
+export function fieldAt(cs, x, y) {
+  let fx = 0, fy = 0;
+  for (const { c, d, s } of cs) {
+    const ex = x - c.x, ey = y - c.y;
+    const r2 = ex * ex + ey * ey;
+    if (r2 > (s * 3) ** 2) continue;
+    const wgt = Math.exp(-r2 / (2 * s * s));
+    fx += d.x * wgt; fy += d.y * wgt;
+  }
+  return { fx, fy };
+}
+
+/**
+ * Carry landmarks through the same warp, so the distorted face can be measured
+ * without paying for a second inference pass.
+ *
+ * The warp is defined as dest(p) = src(p - f(p)), so a feature that sat at `q`
+ * now appears at the `p` satisfying p = q + f(p). Evaluating f at `q` once is
+ * off by roughly |grad f| * |f| -- a few pixels near a control, which is enough
+ * to visibly shift a brow. Three fixed-point passes drive that well under a
+ * pixel, for a fraction of the cost of running the detector again.
+ */
+export function mapLandmarks(cs, lm, w, h) {
+  if (!cs) return lm;
+  return lm.map((p) => {
+    if (!p) return p;
+    const qx = p.x * w, qy = p.y * h;
+    let px = qx, py = qy;
+    for (let i = 0; i < 3; i++) {
+      const f = fieldAt(cs, px, py);
+      px = qx + f.fx;
+      py = qy + f.fy;
+    }
+    return { ...p, x: px / w, y: py / h };
+  });
+}
+
+/** How far a mapped point misses the exact inverse, in pixels. For tests. */
+export function mapResidual(cs, qx, qy, px, py) {
+  const f = fieldAt(cs, px, py);
+  return Math.hypot(px - f.fx - qx, py - f.fy - qy);
 }

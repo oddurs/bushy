@@ -24,6 +24,14 @@ const CHIN = 152;
 
 const FALLBACK = { rgb: [58, 42, 34], spread: 0.22 };
 
+// Every mesh index this module depends on. Validated once against a real
+// detection at boot, so a future model change fails loudly instead of quietly
+// putting the brow in the wrong place.
+export const REQUIRED = [
+  ...BROW_R.upper, ...BROW_R.lower, ...BROW_L.upper, ...BROW_L.lower,
+  ...EYE_REF, HEAD_TOP, CHIN, 9,
+];
+
 // ---------------------------------------------------------------- vectors
 
 const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
@@ -50,6 +58,22 @@ const scratch = (w, h) => {
   c.width = w; c.height = h;
   return c;
 };
+
+// Zeroing the dimensions hands the pixels back immediately. WebKit's canvas
+// memory accounting lags garbage collection, and once its budget is exhausted
+// it silently starts drawing *transparent* canvases rather than throwing.
+export const release = (c) => { if (c) { c.width = 0; c.height = 0; } };
+
+// getImageData throws InvalidStateError on a canvas Safari has invalidated.
+// Every read here is best-effort: a null result degrades one feature rather
+// than failing the whole build.
+export function readPixels(ctx, x, y, w, h) {
+  try {
+    return ctx.getImageData(x, y, w, h);
+  } catch {
+    return null;
+  }
+}
 
 const luma = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
 
@@ -141,7 +165,9 @@ function sampleHair(ctx, spines, w, h) {
   const bw = x1 - x0, bh = y1 - y0;
   if (bw < 2 || bh < 2) return FALLBACK;
 
-  const img = ctx.getImageData(x0, y0, bw, bh).data;
+  const px0 = readPixels(ctx, x0, y0, bw, bh);
+  if (!px0) return FALLBACK;
+  const img = px0.data;
   const hits = [];
   const at = (x, y) => {
     const px = Math.round(x) - x0, py = Math.round(y) - y0;
@@ -195,7 +221,9 @@ function sampleSkin(ctx, lm, w, h) {
   const x0 = clamp(Math.floor(c.x - r), 0, w - 1), y0 = clamp(Math.floor(c.y - r), 0, h - 1);
   const x1 = clamp(Math.ceil(c.x + r), 1, w), y1 = clamp(Math.ceil(c.y + r), 1, h);
   if (x1 - x0 < 3 || y1 - y0 < 3) return 0;
-  const d = ctx.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+  const px = readPixels(ctx, x0, y0, x1 - x0, y1 - y0);
+  if (!px) return 0;
+  const d = px.data;
   const ls = [];
   for (let i = 0; i < d.length; i += 4) ls.push(luma(d[i], d[i + 1], d[i + 2]));
   ls.sort((p, q) => p - q);
@@ -232,7 +260,9 @@ function analyseScalp(ctx, lm, w, h) {
   const bw = x1 - x0, bh = y1 - y0;
   if (bw < 10 || bh < 10) return null;
 
-  const img = ctx.getImageData(x0, y0, bw, bh).data;
+  const scalpPx = readPixels(ctx, x0, y0, bw, bh);
+  if (!scalpPx) return null;
+  const img = scalpPx.data;
 
   // Work at full pixel resolution. Sampling this onto a coarse grid aliases
   // individual strands into noise, and noise has no dominant orientation, so
@@ -334,12 +364,16 @@ function buildOccluders(srcCtx, spine, w, h) {
   }
   mctx.closePath();
   mctx.fill();
-  const md = mctx.getImageData(0, 0, bw, bh).data;
+  const maskPx = readPixels(mctx, 0, 0, bw, bh);
+  release(mask);            // pixels are copied out; give the memory straight back
+  if (!maskPx) return null;
+  const md = maskPx.data;
 
   const layer = scratch(bw, bh);
   const lctx = layer.getContext("2d", { willReadFrequently: true });
   lctx.drawImage(srcCtx.canvas, x0, y0, bw, bh, 0, 0, bw, bh);
-  const id = lctx.getImageData(0, 0, bw, bh);
+  const id = readPixels(lctx, 0, 0, bw, bh);
+  if (!id) { release(layer); return null; }
   const d = id.data;
 
   // Skin baseline from the bright end of the neighbourhood, so the threshold
@@ -358,7 +392,7 @@ function buildOccluders(srcCtx, spine, w, h) {
     if (a > 0.5) kept++;
   }
   // A handful of stray dark pixels is noise, not a pair of glasses.
-  if (kept < bw * bh * 0.012) return null;
+  if (kept < bw * bh * 0.012) { release(layer); return null; }
 
   lctx.putImageData(id, 0, 0);
   return { canvas: layer, x: x0, y: y0, coverage: kept / (bw * bh) };
@@ -593,6 +627,9 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
 
   return {
     draw,
+    // Callers must dispose when replacing a brow: the occluder layer is a live
+    // canvas, and on iOS those count against a budget that fails silently.
+    dispose: () => release(occluders?.canvas),
     spine,
     hair: tone,
     browRgb: brow.rgb,

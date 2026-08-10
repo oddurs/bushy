@@ -11,7 +11,7 @@
 // Not used by the app itself; safe to delete.
 
 import { buildUnibrow } from "./brow.js";
-import { distortFace } from "./warp.js";
+import { distortFace, mapLandmarks, mapResidual } from "./warp.js";
 import { mulberry32 } from "./rng.js";
 
 // Seeded before painting, so the synthetic face is byte-identical run to run
@@ -188,12 +188,24 @@ export function runDemo({ shot, ctx, original, octx, setState, say, opts }) {
   const lm = landmarks();
   const warpAmt = params.has("warp") ? parseFloat(params.get("warp")) : 1;
   const tw = performance.now();
-  const warped = distortFace(octx, lm, W, H, warpAmt, seed);
+  const cs = distortFace(octx, lm, W, H, warpAmt, seed);
   const warpMs = performance.now() - tw;
-  if (warped) ctx.drawImage(original, 0, 0);
+  if (cs) ctx.drawImage(original, 0, 0);
+
+  // Same path the app takes: carry the landmarks through the field instead of
+  // detecting again. Residual is how far that misses the exact inverse.
+  const moved = cs ? mapLandmarks(cs, lm, W, H) : lm;
+  let residual = 0;
+  if (cs) {
+    lm.forEach((p, i) => {
+      if (!p || !moved[i]) return;
+      residual = Math.max(residual,
+        mapResidual(cs, p.x * W, p.y * H, moved[i].x * W, moved[i].y * H));
+    });
+  }
 
   const t0 = performance.now();
-  const uni = buildUnibrow(octx, lm, W, H, { ...opts, seed });
+  const uni = buildUnibrow(octx, moved, W, H, { ...opts, seed });
   const build = performance.now() - t0;
 
   setState("result");
@@ -222,7 +234,8 @@ export function runDemo({ shot, ctx, original, octx, setState, say, opts }) {
     texture: uni.scalp ? +uni.scalp.texture.toFixed(1) : null,
     waviness: +uni.waviness.toFixed(3),
     occluded: +uni.occluded.toFixed(4),
-    warped,
+    warped: !!cs,
+    residual: +residual.toFixed(3),
     warpMs: +warpMs.toFixed(1),
     buildMs: +build.toFixed(1),
     paintMs: +paint.toFixed(1),

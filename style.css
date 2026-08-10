@@ -103,9 +103,11 @@ html, body {
 }
 .stage[data-state="loading"] .overlay,
 .stage[data-state="working"] .overlay,
+.stage[data-state="paused"] .overlay,
 .stage[data-state="error"] .overlay { display: flex; }
 
-.stage[data-state="error"] .spinner { display: none; }
+.stage[data-state="error"] .spinner,
+.stage[data-state="paused"] .spinner { display: none; }
 
 .spinner {
   width: 34px;
@@ -144,6 +146,7 @@ html, body {
 .stage[data-state="result"] .flip,
 .stage[data-state="working"] .flip,
 .stage[data-state="counting"] .flip,
+.stage[data-state="paused"] .flip,
 .stage[data-state="error"] .flip { display: none; }
 
 /* ---- controls ---- */
@@ -178,6 +181,7 @@ html, body {
 
 .stage[data-state="result"] .shutter,
 .stage[data-state="working"] .shutter,
+.stage[data-state="paused"] .shutter,
 .stage[data-state="error"] .shutter { display: none; }
 
 .btn {

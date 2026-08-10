@@ -84,8 +84,22 @@ Any static server over `localhost` (cameras need a secure context):
 python3 -m http.server 7717
 ```
 
-Then open <http://127.0.0.1:7717>. No build step, no dependencies to install — MediaPipe
-loads from a CDN at runtime.
+Then open <http://127.0.0.1:7717>. No build step and nothing to install to *run* it — the
+MediaPipe runtime and model are vendored in `vendor/mediapipe`, with the CDN kept as an
+automatic fallback for pre-SIMD devices and iOS below 16.
+
+To run the tests:
+
+```sh
+npm install
+npx playwright install chromium
+npm test
+```
+
+17 tests, about nine seconds, no device needed. They drive the real pipeline over a
+synthetic face and assert the measurements — colour against painted truth, waviness
+ordering, glasses handling, warp accuracy, seed reproducibility — plus the camera lifecycle
+paths. Also run on every push.
 
 ## Knobs
 
@@ -97,6 +111,7 @@ Query parameters, all optional:
 | `?warp=0` | Disable the face distortion (`2.5` exaggerates it) |
 | `?seed=123` | Pin a shot so it reproduces exactly |
 | `?scalpMix=0.6` | How far the brow colour pulls toward scalp hair (default `0.38`) |
+| `?redetect=1` | Re-run detection on the warped photo instead of mapping landmarks |
 
 ## Layout
 
@@ -107,6 +122,8 @@ Query parameters, all optional:
 | `warp.js` | Facial distortion |
 | `rng.js` | Shared seeded PRNG |
 | `demo.js` | Dev harness — see below |
+| `tests/` | Playwright suite driven by the harness |
+| `vendor/` | Vendored MediaPipe runtime and model |
 
 `demo.js` paints a synthetic face with known brows, hair and glasses, then runs the real
 pipeline over it. It exists because "does this look right?" is otherwise unanswerable
@@ -116,9 +133,9 @@ byte-reproducible and comparable across changes. Nothing in the app imports it.
 
 ## Notes
 
-[`docs/hardening.md`](docs/hardening.md) — research on the app's failure modes: camera
-lifecycle on iOS, canvas memory ceilings, the CDN dependency, and what a test suite should
-cover. Survey, not changelog; none of it is implemented yet.
+[`docs/hardening.md`](docs/hardening.md) — the app's failure modes and what was done about
+each: camera lifecycle on iOS, canvas memory ceilings, the CDN dependency, dropping the
+second inference pass, and what the test suite covers.
 
 ## Licence
 
