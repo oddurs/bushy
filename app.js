@@ -14,7 +14,7 @@ const ctx = shot.getContext("2d", { willReadFrequently: true });
 
 const els = {
   count: $("count"), flash: $("flash"), msg: $("overlay-msg"), status: $("status"),
-  shoot: $("shoot"), retake: $("retake"), download: $("download"), compare: $("compare"),
+  shoot: $("shoot"), retake: $("retake"), download: $("download"),
 };
 
 const params = new URLSearchParams(location.search);
@@ -30,8 +30,7 @@ const OPTS = {
 };
 const WARP = num("warp", 1);
 
-// The clean photo, kept aside so the reveal can repaint from scratch each frame
-// and so "hold to compare" has something to show.
+// The clean photo, kept aside so the reveal can repaint from scratch each frame.
 const original = document.createElement("canvas");
 const octx = original.getContext("2d", { willReadFrequently: true });
 
@@ -215,7 +214,7 @@ async function shoot() {
 
   setState("result");
   await reveal();
-  els.retake.hidden = els.download.hidden = els.compare.hidden = false;
+  els.retake.hidden = els.download.hidden = false;
 }
 
 // ---------------------------------------------------------------- controls
@@ -227,7 +226,7 @@ els.retake.addEventListener("click", () => {
   brows = [];
   setState("live");
   els.shoot.disabled = false;
-  els.retake.hidden = els.download.hidden = els.compare.hidden = true;
+  els.retake.hidden = els.download.hidden = true;
   say("");
 });
 
@@ -244,14 +243,6 @@ els.download.addEventListener("click", () => {
     URL.revokeObjectURL(url);
   }, "image/png");
 });
-
-const showOriginal = (on) => { if (brows.length) repaint(on ? 0 : 1); };
-for (const ev of ["mousedown", "touchstart"]) {
-  els.compare.addEventListener(ev, (e) => { e.preventDefault(); showOriginal(true); });
-}
-for (const ev of ["mouseup", "mouseleave", "touchend", "touchcancel"]) {
-  els.compare.addEventListener(ev, () => showOriginal(false));
-}
 
 addEventListener("keydown", (e) => {
   if (e.code !== "Space" && e.code !== "Enter") return;

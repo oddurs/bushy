@@ -48,11 +48,16 @@ contaminated. When a rim covers the brow outright, that trips and it borrows you
 instead of trusting a black reading.
 
 **Distortion.** A Gaussian displacement field, not a mesh warp, so there are no triangle
-seams to hide. Every offset is 0.5–2% of face height, aimed at proportions people read
-subconsciously: uneven eye heights, eyes set slightly too wide, one eye prised a little
-wider, a longer nose, a stretched philtrum, a slightly long chin. Only the chin control
-touches the face's outline, deliberately kept gentle and wide — a tight pull there smears
-the jaw against the background instead of reading as a longer chin.
+seams to hide. Every offset is under 2.5% of face height, aimed at proportions people read
+subconsciously rather than at anything they'd consciously notice: eyes set slightly too
+close together and at uneven heights, one eye prised a little wider, ears pushed out — one
+further than the other, because ears that stick out evenly just look like ears — a longer
+leaning nose, a stretched philtrum, a narrowed mouth with uneven corners, a taller
+forehead and a slightly long chin.
+
+The controls that touch the face's *outline* (ears, chin, hairline) are deliberately
+gentler and much wider than the interior ones. A tight pull on a silhouette smears the
+edge against the background instead of reading as anatomy.
 
 **Variation.** One seed per shot drives both the warp and the hair, so no two photos match:
 bushiness jitters, strands reshuffle, and the asymmetric cues flip direction. It's seeded

@@ -45,6 +45,8 @@ function landmarks() {
   put(lm, 10, CX, 190);   // hairline
   put(lm, 152, CX, 630);  // chin
   put(lm, 1, CX, 412);    // nose tip
+  put(lm, 234, 232, 335); // ear level, widest points of the face
+  put(lm, 454, 668, 335);
   put(lm, 61, 395, 481);  // mouth corners
   put(lm, 291, 505, 481);
   return lm;
@@ -105,6 +107,14 @@ function paintFace(g, browColour, scalpColour, opts) {
   const skin = g.createRadialGradient(CX, 300, 40, CX, 340, 330);
   skin.addColorStop(0, "#e8c3a4");
   skin.addColorStop(1, "#bf9271");
+
+  g.fillStyle = "#cf9f7d";
+  for (const ex of [232, 668]) {
+    g.beginPath();
+    g.ellipse(ex, 335, 26, 44, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+
   g.fillStyle = skin;
   g.beginPath();
   g.ellipse(CX, 350, 220, 285, 0, 0, Math.PI * 2);
@@ -187,7 +197,7 @@ export function runDemo({ shot, ctx, original, octx, setState, say, opts }) {
   const build = performance.now() - t0;
 
   setState("result");
-  for (const id of ["retake", "download", "compare"]) document.getElementById(id).hidden = false;
+  for (const id of ["retake", "download"]) document.getElementById(id).hidden = false;
   if (!uni) {
     say("demo: build failed");
     window.__demo = { ok: false };

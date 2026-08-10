@@ -27,6 +27,9 @@ const EYE_L = [362, 263];
 // Eyelids are optional: used for the uneven-eye-size cue, skipped if absent.
 const LID_R = [159, 145];
 const LID_L = [386, 374];
+// Widest points of the face oval, level with the ears.
+const EAR_R = 234;
+const EAR_L = 454;
 
 const need = [NOSE_TIP, CHIN, HEAD_TOP, MOUTH_L, MOUTH_R, ...EYE_R, ...EYE_L];
 
@@ -79,23 +82,41 @@ function controls(lm, w, h, amount, rnd) {
   const lean = coin();
   const smirk = coin();
 
+  // Ears pushed out from the head. One further than the other, because ears
+  // that stick out evenly just look like ears.
+  const earBig = rnd() < 0.5;
+  const ears = [[EAR_R, 0.013], [EAR_L, 0.013]].flatMap(([id, base], i) => {
+    if (!lm[id]) return [];
+    const p = pt(id);
+    const dir = outward(p);
+    const k = (earBig === (i === 0)) ? 1 : 0.62;
+    return [{
+      // Centred just outside the face oval so the stretch lands on the ear
+      // rather than dragging the cheek with it.
+      c: { x: p.x + side.x * dir * 0.035 * H, y: p.y + side.y * dir * 0.035 * H },
+      d: move(0, dir * base * k * H, j()),
+      s: 0.10 * H,
+    }];
+  });
+
   return [
-    // eyes: asymmetric height, set slightly too wide
-    { c: low, d: move(-0.014 * H, outward(low) * 0.009 * H, j()), s: 0.11 * H },
-    { c: high, d: move(0.005 * H, outward(high) * 0.009 * H, j()), s: 0.11 * H },
+    // eyes: uneven heights, and set a touch too close together
+    { c: low, d: move(-0.016 * H, -outward(low) * 0.012 * H, j()), s: 0.11 * H },
+    { c: high, d: move(0.006 * H, -outward(high) * 0.012 * H, j()), s: 0.11 * H },
     ...lidPair,
-    // nose: longer, broader at the base
-    { c: nose, d: move(-0.020 * H, lean * 0.004 * H, j()), s: 0.10 * H },
-    { c: { x: nose.x + side.x * 0.05 * H, y: nose.y + side.y * 0.05 * H }, d: move(0, 0.007 * H, j()), s: 0.07 * H },
-    { c: { x: nose.x - side.x * 0.05 * H, y: nose.y - side.y * 0.05 * H }, d: move(0, -0.007 * H, j()), s: 0.07 * H },
-    // mouth: dropped away from the nose (long philtrum), corners uneven
-    { c: mouth, d: move(-0.013 * H, 0, j()), s: 0.10 * H },
-    { c: mouthL, d: move(smirk * 0.006 * H, 0, j()), s: 0.06 * H },
-    { c: mouthR, d: move(smirk * -0.004 * H, 0, j()), s: 0.06 * H },
-    // chin: a little too long. Kept gentle and wide -- this is the only control
-    // touching the face's outline, and a tight pull there smears the jaw edge
-    // against the background instead of reading as a longer chin.
-    { c: chin, d: move(-0.007 * H, 0, j()), s: 0.17 * H },
+    // nose: longer, leaning, broader at the base
+    { c: nose, d: move(-0.024 * H, lean * 0.005 * H, j()), s: 0.10 * H },
+    { c: { x: nose.x + side.x * 0.05 * H, y: nose.y + side.y * 0.05 * H }, d: move(0, 0.009 * H, j()), s: 0.07 * H },
+    { c: { x: nose.x - side.x * 0.05 * H, y: nose.y - side.y * 0.05 * H }, d: move(0, -0.009 * H, j()), s: 0.07 * H },
+    // mouth: dropped away from the nose (long philtrum), narrowed, corners uneven
+    { c: mouth, d: move(-0.016 * H, 0, j()), s: 0.10 * H },
+    { c: mouthL, d: move(smirk * 0.007 * H, -outward(mouthL) * 0.008 * H, j()), s: 0.06 * H },
+    { c: mouthR, d: move(smirk * -0.005 * H, -outward(mouthR) * 0.008 * H, j()), s: 0.06 * H },
+    ...ears,
+    // Outline controls stay gentle and wide -- a tight pull on the silhouette
+    // smears the edge against the background instead of reading as anatomy.
+    { c: chin, d: move(-0.008 * H, 0, j()), s: 0.17 * H },
+    { c: top, d: move(0.009 * H, 0, j()), s: 0.16 * H },
   ];
 }
 
