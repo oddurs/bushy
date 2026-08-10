@@ -1,0 +1,177 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font: 16px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+#video,
+#shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* the live preview is mirrored so it behaves like a mirror; the capture is
+   mirrored to match, so landmark space and display space always agree. */
+#video { transform: scaleX(-1); }
+
+.stage[data-state="loading"] #shot,
+.stage[data-state="live"] #shot,
+.stage[data-state="counting"] #shot { visibility: hidden; }
+
+.stage[data-state="shot"] #video,
+.stage[data-state="working"] #video,
+.stage[data-state="result"] #video { visibility: hidden; }
+
+/* ---- countdown ---- */
+
+.countdown {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  text-shadow: 0 6px 50px rgba(0, 0, 0, 0.6);
+}
+.stage[data-state="counting"] .countdown { display: flex; }
+
+.countdown span {
+  font-size: min(38vh, 42vw);
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  animation: pop 0.9s ease-out;
+}
+
+@keyframes pop {
+  0%   { transform: scale(0.45); opacity: 0; }
+  18%  { transform: scale(1.08); opacity: 1; }
+  32%  { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
+.flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+.flash.fire { animation: flash 420ms ease-out; }
+@keyframes flash {
+  0% { opacity: 0.95; }
+  100% { opacity: 0; }
+}
+
+/* ---- overlay ---- */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  text-align: center;
+  padding: 2rem;
+}
+.stage[data-state="loading"] .overlay,
+.stage[data-state="working"] .overlay,
+.stage[data-state="error"] .overlay { display: flex; }
+
+.stage[data-state="error"] .spinner { display: none; }
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #fff;
+  animation: spin 0.85s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#overlay-msg { margin: 0; max-width: 30ch; opacity: 0.85; }
+
+/* ---- controls ---- */
+
+.controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 2rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  pointer-events: none;
+}
+.controls > * { pointer-events: auto; }
+
+.shutter {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.25), 0 10px 30px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.12s ease, opacity 0.2s ease;
+}
+.shutter:hover:not(:disabled) { transform: scale(1.06); }
+.shutter:active:not(:disabled) { transform: scale(0.94); }
+.shutter:disabled { opacity: 0.35; cursor: default; }
+
+.stage[data-state="result"] .shutter,
+.stage[data-state="working"] .shutter,
+.stage[data-state="error"] .shutter { display: none; }
+
+.btn {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.7rem 1.3rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+.btn:hover { background: rgba(0, 0, 0, 0.6); }
+.btn:active { transform: scale(0.97); }
+
+.status {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 7.5rem);
+  margin: 0;
+  max-width: min(90vw, 44ch);
+  text-align: center;
+  font-size: 0.85rem;
+  opacity: 0.72;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bushy</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐛</text></svg>">
+</head>
+<body>
+
+<div id="stage" class="stage" data-state="loading">
+
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="shot"></canvas>
+
+  <div id="countdown" class="countdown"><span id="count">3</span></div>
+  <div id="flash" class="flash"></div>
+
+  <div id="overlay" class="overlay">
+    <div class="spinner"></div>
+    <p id="overlay-msg"></p>
+  </div>
+
+  <p id="status" class="status"></p>
+
+  <div class="controls">
+    <button id="compare" class="btn ghost" hidden>Hold to compare</button>
+    <button id="shoot" class="shutter" disabled aria-label="Take photo"></button>
+    <button id="retake" class="btn ghost" hidden>Retake</button>
+    <button id="download" class="btn ghost" hidden>Save</button>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
