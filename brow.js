@@ -267,24 +267,39 @@ function analyseScalp(ctx, lm, w, h) {
   // Work at full pixel resolution. Sampling this onto a coarse grid aliases
   // individual strands into noise, and noise has no dominant orientation, so
   // every head measures as curly.
+  // Histograms rather than an array of per-pixel tuples: this loop runs over
+  // every pixel of the patch, and allocating there dominated the whole build.
+  // Medians come out of the bins in one pass instead of three sorts.
   const lums = new Float32Array(bw * bh).fill(-1);
-  const rows = [];
+  const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  let n = 0, sumL = 0, sumL2 = 0;
+  // Walk the patch in its own axes: rel = (px,py) - top, projected onto up/side.
+  const relX0 = x0 - top.x, relY0 = y0 - top.y;
   for (let py = 0; py < bh; py++) {
+    const ry = py + relY0;
     for (let px = 0; px < bw; px++) {
-      const rel = { x: px + x0 - top.x, y: py + y0 - top.y };
-      const fu = dot(rel, up), fs = dot(rel, side);
-      if (fu < d0 || fu > d1 || fs < -halfW || fs > halfW) continue;
+      const rx = px + relX0;
+      const fu = rx * up.x + ry * up.y;
+      if (fu < d0 || fu > d1) continue;
+      const fs = rx * side.x + ry * side.y;
+      if (fs < -halfW || fs > halfW) continue;
       const o = (py * bw + px) * 4;
       const R = img[o], G = img[o + 1], B = img[o + 2];
       const L = luma(R, G, B);
       lums[py * bw + px] = L;
-      rows.push([R, G, B, L]);
+      hist[0][R]++; hist[1][G]++; hist[2][B]++;
+      n++; sumL += L; sumL2 += L * L;
     }
   }
-  if (rows.length < 900) return null;
+  if (n < 900) return null;
 
-  const mean = rows.reduce((a, c) => a + c[3], 0) / rows.length;
-  const sd = Math.sqrt(rows.reduce((a, c) => a + (c[3] - mean) ** 2, 0) / rows.length);
+  const mean = sumL / n;
+  const sd = Math.sqrt(Math.max(0, sumL2 / n - mean * mean));
+  const histMedian = (h) => {
+    let c = 0;
+    for (let i = 0; i < 256; i++) { c += h[i]; if (c * 2 > n) return i; }
+    return 255;
+  };
 
   const at = (r, c) => (r < 0 || c < 0 || r >= bh || c >= bw ? -1 : lums[r * bw + c]);
   const grad = (r, c, dr, dc) => {
@@ -317,7 +332,7 @@ function analyseScalp(ctx, lm, w, h) {
     // Flat, low-texture patches are forehead, a wall or a bald head -- not hair
     // worth copying.
     hairLike: sd > 9 && cohN > 3,
-    rgb: [median(rows, 0), median(rows, 1), median(rows, 2)].map((v) => clamp(Math.round(v), 6, 240)),
+    rgb: hist.map((h) => clamp(histMedian(h), 6, 240)),
     waviness: clamp((1 - coherence) * 1.25, 0, 1),
     coherence,
     texture: sd,
@@ -377,12 +392,18 @@ function buildOccluders(srcCtx, spine, w, h) {
   const d = id.data;
 
   // Skin baseline from the bright end of the neighbourhood, so the threshold
-  // scales with exposure and skin tone instead of being a fixed grey.
-  const all = [];
-  for (let i = 0; i < d.length; i += 4) all.push(luma(d[i], d[i + 1], d[i + 2]));
-  all.sort((a, b) => a - b);
-  const base = all[Math.floor(all.length * 0.72)];
-  if (base < 24) return null;
+  // scales with exposure and skin tone instead of being a fixed grey. Histogram
+  // percentile: sorting every pixel of the region to read one quantile was the
+  // second most expensive thing in the build.
+  const lumHist = new Uint32Array(256);
+  const total = d.length >> 2;
+  for (let i = 0; i < d.length; i += 4) lumHist[luma(d[i], d[i + 1], d[i + 2]) | 0]++;
+  let base = 255;
+  for (let i = 0, seen = 0; i < 256; i++) {
+    seen += lumHist[i];
+    if (seen >= total * 0.72) { base = i; break; }
+  }
+  if (base < 24) { release(layer); return null; }
 
   let kept = 0;
   for (let i = 0, p = 0; i < d.length; i += 4, p++) {
@@ -451,8 +472,8 @@ function growStrands(spine, tone, waviness, rnd, opts) {
           // Signed S-amplitude, scaled by how wavy the head hair measured.
           wave: (rnd() - 0.5) * 2 * waviness * 0.3,
           w: Math.max(0.55, p.t * 0.05 * lerp(0.6, 1.5, rnd()) * widthScale),
-          col: shade(tone.rgb, shadeF * lit * lerp(1 - tone.spread, 1 + tone.spread, rnd()),
-            lerp(alphaLo, alphaHi, rnd())),
+          fac: shadeF * lit * lerp(1 - tone.spread, 1 + tone.spread, rnd()),
+          alpha: lerp(alphaLo, alphaHi, rnd()),
           layer,
         });
       }
@@ -466,6 +487,47 @@ function growStrands(spine, tone, waviness, rnd, opts) {
   emit(2, 0.07, 1.2, 0.6, 1.25, 0.22, 0.45, 0.5);
 
   return strands;
+}
+
+// Group strands that can share a stroke. Every hair used to be its own
+// beginPath/strokeStyle/stroke, which is thousands of state changes per frame;
+// quantising colour and width lets a few hundred paths carry all of them.
+//
+// Strands within a bucket are still stroked separately, in one pass over a
+// shared style: batching them into a single path would make overlaps composite
+// once instead of twice, and the doubled darkness where hairs cross is a real
+// part of how dense the brow reads.
+const QF = 16, QA = 6, QW = 5;
+const FAC_LO = 0.3, FAC_HI = 2.0, A_LO = 0.18, A_HI = 0.96;
+
+function bucketStrands(strands, rgb) {
+  let wMin = Infinity, wMax = 0;
+  for (const s of strands) {
+    if (s.w < wMin) wMin = s.w;
+    if (s.w > wMax) wMax = s.w;
+  }
+  const wSpan = wMax - wMin || 1;
+  const buckets = new Map();
+
+  for (const s of strands) {
+    const fi = Math.round(clamp((s.fac - FAC_LO) / (FAC_HI - FAC_LO), 0, 1) * (QF - 1));
+    const ai = Math.round(clamp((s.alpha - A_LO) / (A_HI - A_LO), 0, 1) * (QA - 1));
+    const wi = Math.round(((s.w - wMin) / wSpan) * (QW - 1));
+    // Layer leads the key so buckets come out in draw order: bed, coat, flyaways.
+    const key = ((s.layer * QF + fi) * QA + ai) * QW + wi;
+    let b = buckets.get(key);
+    if (!b) {
+      b = {
+        style: shade(rgb, FAC_LO + (fi / (QF - 1)) * (FAC_HI - FAC_LO),
+          A_LO + (ai / (QA - 1)) * (A_HI - A_LO)),
+        width: wMin + (wi / (QW - 1)) * wSpan,
+        items: [],
+      };
+      buckets.set(key, b);
+    }
+    b.items.push(s);
+  }
+  return [...buckets.values()];
 }
 
 // ---------------------------------------------------------------- public
@@ -489,8 +551,11 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
 
   // Colour and native thickness come from the untouched brows, before we
   // exaggerate anything.
-  const brow = sampleHair(srcCtx, [rawR, rawL], w, h);
-  const scalp = analyseScalp(srcCtx, lm, w, h);
+  const clock = {};
+  const time = (k, fn) => { const t = performance.now(); const v = fn(); clock[k] = +(performance.now() - t).toFixed(2); return v; };
+
+  const brow = time("sampleHair", () => sampleHair(srcCtx, [rawR, rawL], w, h));
+  const scalp = time("analyseScalp", () => analyseScalp(srcCtx, lm, w, h));
 
   const skinL = sampleSkin(srcCtx, lm, w, h);
   const browL = luma(brow.rgb[0], brow.rgb[1], brow.rgb[2]);
@@ -563,8 +628,10 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
     return { ...p, tan, up, t0: p.t, t: p.t * bush * envelope(N > 1 ? i / (N - 1) : 0.5) };
   });
 
-  const strands = growStrands(spine, tone, waviness, rnd, { spacing: step });
-  const occluders = opts.occlude === false ? null : buildOccluders(srcCtx, spine, w, h);
+  const strands = time("growStrands", () => growStrands(spine, tone, waviness, rnd, { spacing: step }));
+  const buckets = time("bucket", () => bucketStrands(strands, tone.rgb));
+  const occluders = time("occluders", () =>
+    (opts.occlude === false ? null : buildOccluders(srcCtx, spine, w, h)));
 
   // The growth front starts at the bridge and creeps out to both tails, so the
   // reveal looks like something crawled onto the face rather than faded in.
@@ -574,6 +641,7 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
   const draw = (ctx, progress = 1) => {
     const g = clamp(progress, 0, 1);
     if (g <= 0) return;
+    const tBed = performance.now();
 
     // A soft multiplied bed so skin doesn't glare through the coat.
     ctx.save();
@@ -595,31 +663,37 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
     ctx.fill();
     ctx.restore();
 
+    clock.bed = +(performance.now() - tBed).toFixed(2);
+    const tStr = performance.now();
+
     ctx.save();
     ctx.lineCap = "round";
-    for (const s of strands) {
-      const L = s.len * growth(s.u, g);
-      if (L <= 0.2) continue;
-      const px = -s.dy, py = s.dx;
-      const bend = s.curl * L;
-      const a1 = s.wave * L, a2 = -s.wave * 0.9 * L;
-      ctx.strokeStyle = s.col;
-      ctx.lineWidth = s.w;
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      // Two opposed control offsets give the strand an S: straight hair barely
-      // deviates, wavy hair kinks.
-      ctx.bezierCurveTo(
-        s.x + s.dx * L * 0.33 + px * (bend * 0.25 + a1),
-        s.y + s.dy * L * 0.33 + py * (bend * 0.25 + a1),
-        s.x + s.dx * L * 0.7 + px * (bend * 0.5 + a2),
-        s.y + s.dy * L * 0.7 + py * (bend * 0.5 + a2),
-        s.x + s.dx * L + px * bend * 0.55,
-        s.y + s.dy * L + py * bend * 0.55,
-      );
-      ctx.stroke();
+    for (const bucket of buckets) {
+      ctx.strokeStyle = bucket.style;
+      ctx.lineWidth = bucket.width;
+      for (const s of bucket.items) {
+        const L = s.len * growth(s.u, g);
+        if (L <= 0.2) continue;
+        const px = -s.dy, py = s.dx;
+        const bend = s.curl * L;
+        const a1 = s.wave * L, a2 = -s.wave * 0.9 * L;
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        // Two opposed control offsets give the strand an S: straight hair barely
+        // deviates, wavy hair kinks.
+        ctx.bezierCurveTo(
+          s.x + s.dx * L * 0.33 + px * (bend * 0.25 + a1),
+          s.y + s.dy * L * 0.33 + py * (bend * 0.25 + a1),
+          s.x + s.dx * L * 0.7 + px * (bend * 0.5 + a2),
+          s.y + s.dy * L * 0.7 + py * (bend * 0.5 + a2),
+          s.x + s.dx * L + px * bend * 0.55,
+          s.y + s.dy * L + py * bend * 0.55,
+        );
+        ctx.stroke();
+      }
     }
     ctx.restore();
+    clock.strands = +(performance.now() - tStr).toFixed(2);
 
     // Frames, fringe and lashes go back over the top.
     if (occluders) ctx.drawImage(occluders.canvas, occluders.x, occluders.y);
@@ -639,5 +713,6 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
     waviness,
     occluded: occluders ? occluders.coverage : 0,
     strandCount: strands.length,
+    clock,
   };
 }

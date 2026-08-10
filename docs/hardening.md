@@ -11,18 +11,48 @@ bite a real user, not by how interesting they are.
 
 ## Where it stands
 
-The pipeline is fast and the maths is verified. Measured on the synthetic 900×700 test face:
+Measured on the synthetic test face at 1440x1120, the size a phone actually captures
+(`?demo=1&scale=1.6`). "Before" is the first working version; "after" is current.
 
-| Stage | Cost |
-| --- | --- |
-| `distortFace` | 11–19 ms |
-| `buildUnibrow` (measure + generate ~2,000 strands) | 11–20 ms |
-| One reveal frame (repaint + strands) | 1–3 ms |
-| `landmarker.detect` | not measured on mobile — **the unknown** |
+| Stage | Before | After | |
+| --- | --- | --- | --- |
+| `distortFace` | 37.5 ms | **19.1 ms** | 2.0x |
+| `buildUnibrow` total | 26.7 ms | **7.3 ms** | 3.7x |
+| &nbsp;&nbsp;`analyseScalp` | 14.8 ms | **2.3 ms** | 6.4x |
+| &nbsp;&nbsp;`buildOccluders` | 7.9 ms | **1.9 ms** | 4.2x |
+| &nbsp;&nbsp;`growStrands` + bucketing | 2.4 ms | 1.9 ms | |
+| **Per shot** | **64 ms** | **26 ms** | **2.4x** |
+| One reveal frame | 2.7 ms | **1.7 ms** | 1.6x |
+| `landmarker.detect` | x2 per shot | **x1** | see finding 8 |
 
-The weaknesses are not in the rendering. They are all in the **lifecycle**: what happens
-when the camera goes away, the network is hostile, the device rotates, or the page is
-restored from cache. That is the entire gap between "works on my machine" and "rock solid".
+What actually mattered:
+
+- **Scatter, don't gather.** The warp looped every pixel in the union of the control boxes
+  against all thirteen controls. Now each control writes only into its own 3-sigma box.
+  Paired with a 4096-entry `exp()` table (worth ~0.1 px of displacement error at most).
+- **Histograms instead of sorts.** `analyseScalp` allocated a four-element array per pixel
+  of the scalp patch and sorted the lot three times to read three medians; `buildOccluders`
+  sorted every pixel of the brow region to read one percentile. Both are now 256-bin
+  histograms — one pass, no allocation. This was the single biggest win, and it was pure
+  waste rather than anything clever.
+- **Batched strokes.** Every hair set its own `strokeStyle` and issued its own `stroke()` —
+  thousands of state changes per frame. Colour and width are quantised into buckets
+  (16 shades x 6 alphas x 5 widths), so a few hundred style changes cover all 4,300 hairs.
+  Strands are still stroked individually *within* a bucket: merging them into one path
+  would composite overlaps once instead of twice, and the doubled darkness where hairs
+  cross is part of how dense the brow reads. Measured cost of the quantisation: 0.08%
+  change in mean brow luminance.
+
+Tried and rejected: evaluating the displacement field on a coarse lattice and interpolating.
+The field is smooth enough to allow it, but once the per-control boxes were in, the cost had
+moved to the full-resolution resample, which a coarser field doesn't shrink. 1.3x for a page
+of index arithmetic, and it put 64/255 deltas on hard edges. Not worth it.
+
+The payload needs no work: GitHub Pages already gzips the vendored runtime, so 15.3 MB on
+disk is **6.9 MB** over the wire.
+
+`buildUnibrow` returns a `clock` of per-stage timings, surfaced by the demo harness, so this
+table can be regenerated on any device rather than guessed at.
 
 ---
 

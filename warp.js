@@ -16,6 +16,14 @@ import { readPixels } from "./brow.js";
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+// exp(-t) sampled over [0, 4.5]: t = r^2 / 2s^2, and every control is cut off
+// at 3 sigma, where t is 4.5. Built once.
+const LUT_N = 4096;
+const LUT_MAX = 4.5;
+const LUT_SCALE = LUT_N / LUT_MAX;
+const EXP = new Float32Array(LUT_N + 2);
+for (let i = 0; i < EXP.length; i++) EXP[i] = Math.exp(-Math.min(LUT_MAX, i / LUT_SCALE));
+
 // Deliberately reliable landmarks only -- face-mesh indices that are stable
 // across versions. Everything else is derived geometrically.
 const NOSE_TIP = 1;
@@ -149,42 +157,66 @@ export function distortFace(ctx, lm, w, h, amount = 1, seed = 0x5eed1e) {
   const src = new Uint8ClampedArray(img.data);   // untouched copy to sample from
   const out = img.data;
 
-  // Precompute per-control constants.
-  const n = cs.length;
-  const cx = new Float64Array(n), cy = new Float64Array(n);
-  const dx = new Float64Array(n), dy = new Float64Array(n);
-  const k = new Float64Array(n), reach = new Float64Array(n);
-  cs.forEach((ctl, i) => {
-    cx[i] = ctl.c.x - x0; cy[i] = ctl.c.y - y0;
-    dx[i] = ctl.d.x; dy[i] = ctl.d.y;
-    k[i] = -1 / (2 * ctl.s * ctl.s);
-    reach[i] = (ctl.s * 3) ** 2;
-  });
+  // Scatter each control into a shared field, visiting only the points inside
+  // its own 3-sigma box. The obvious loop -- every pixel against every control
+  // -- pays a distance test for all thirteen controls on every pixel in the
+  // union of their boxes, and most of those are nowhere near the control.
+  //
+  // (Evaluating the field on a coarse lattice and interpolating was tried: the
+  // field is smooth enough for it, but once the boxes above are in place the
+  // cost is dominated by the full-resolution resample below, which a coarser
+  // field does not shrink. It bought 1.3x for a page of index arithmetic.)
+  const fieldX = new Float32Array(bw * bh);
+  const fieldY = new Float32Array(bw * bh);
+  let tx0 = bw, ty0 = bh, tx1 = 0, ty1 = 0;   // region the field actually touches
 
-  for (let py = 0; py < bh; py++) {
-    for (let px = 0; px < bw; px++) {
-      let fx = 0, fy = 0;
-      for (let i = 0; i < n; i++) {
-        const ex = px - cx[i], ey = py - cy[i];
-        const r2 = ex * ex + ey * ey;
-        if (r2 > reach[i]) continue;
-        const wgt = Math.exp(r2 * k[i]);
-        fx += dx[i] * wgt; fy += dy[i] * wgt;
+  for (const { c, d, s } of cs) {
+    const ccx = c.x - x0, ccy = c.y - y0;
+    const reach = s * 3;
+    const bx0 = Math.max(0, Math.floor(ccx - reach)), bx1 = Math.min(bw - 1, Math.ceil(ccx + reach));
+    const by0 = Math.max(0, Math.floor(ccy - reach)), by1 = Math.min(bh - 1, Math.ceil(ccy + reach));
+    if (bx1 < bx0 || by1 < by0) continue;
+    if (bx0 < tx0) tx0 = bx0;
+    if (by0 < ty0) ty0 = by0;
+    if (bx1 > tx1) tx1 = bx1;
+    if (by1 > ty1) ty1 = by1;
+
+    const inv = 1 / (2 * s * s);
+    const reach2 = reach * reach;
+    for (let py = by0; py <= by1; py++) {
+      const ey = py - ccy, ey2 = ey * ey;
+      const row = py * bw;
+      for (let px = bx0; px <= bx1; px++) {
+        const ex = px - ccx;
+        const r2 = ex * ex + ey2;
+        if (r2 > reach2) continue;
+        // exp() is the hot instruction here; a table over [0, 4.5] costs at most
+        // ~0.1px of displacement error, well inside what the warp cares about.
+        const w = EXP[(r2 * inv * LUT_SCALE) | 0];
+        fieldX[row + px] += d.x * w;
+        fieldY[row + px] += d.y * w;
       }
+    }
+  }
 
-      const o = (py * bw + px) * 4;
+  for (let py = ty0; py <= ty1; py++) {
+    for (let px = tx0; px <= tx1; px++) {
+      const idx = py * bw + px;
+      const fx = fieldX[idx], fy = fieldY[idx];
       if (fx === 0 && fy === 0) continue;
 
       // Pull: whatever sat at (p - field) is shown at p.
       const sx = clamp(px - fx, 0, bw - 1.001);
       const sy = clamp(py - fy, 0, bh - 1.001);
       const ix = sx | 0, iy = sy | 0;
-      const tx = sx - ix, ty = sy - iy;
+      const ftx = sx - ix, fty = sy - iy;
       const a = (iy * bw + ix) * 4, b = a + 4, c = a + bw * 4, d = c + 4;
-      const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty;
-      for (let ch = 0; ch < 3; ch++) {
-        out[o + ch] = src[a + ch] * w00 + src[b + ch] * w10 + src[c + ch] * w01 + src[d + ch] * w11;
-      }
+      const w00 = (1 - ftx) * (1 - fty), w10 = ftx * (1 - fty);
+      const w01 = (1 - ftx) * fty, w11 = ftx * fty;
+      const o = idx * 4;
+      out[o] = src[a] * w00 + src[b] * w10 + src[c] * w01 + src[d] * w11;
+      out[o + 1] = src[a + 1] * w00 + src[b + 1] * w10 + src[c + 1] * w01 + src[d + 1] * w11;
+      out[o + 2] = src[a + 2] * w00 + src[b + 2] * w10 + src[c + 2] * w01 + src[d + 2] * w11;
     }
   }
 

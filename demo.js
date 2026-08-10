@@ -180,32 +180,38 @@ export function runDemo({ shot, ctx, original, octx, setState, say, opts }) {
   const seed = opts.seed ?? 0x1bad5eed;
   R = mulberry32(seed ^ 0x9e37);
 
-  original.width = shot.width = W;
-  original.height = shot.height = H;
+  // &scale=1.6 renders the same face at real capture dimensions, for profiling.
+  const k = parseFloat(params.get("scale")) || 1;
+  const CW = Math.round(W * k), CH = Math.round(H * k);
+  original.width = shot.width = CW;
+  original.height = shot.height = CH;
+  octx.save();
+  octx.scale(k, k);
   paintFace(octx, `#${params.get("brow") || "4b3020"}`, `#${params.get("hair") || "8a6a43"}`, flags);
+  octx.restore();
   ctx.drawImage(original, 0, 0);
 
   const lm = landmarks();
   const warpAmt = params.has("warp") ? parseFloat(params.get("warp")) : 1;
   const tw = performance.now();
-  const cs = distortFace(octx, lm, W, H, warpAmt, seed);
+  const cs = distortFace(octx, lm, CW, CH, warpAmt, seed);
   const warpMs = performance.now() - tw;
   if (cs) ctx.drawImage(original, 0, 0);
 
   // Same path the app takes: carry the landmarks through the field instead of
   // detecting again. Residual is how far that misses the exact inverse.
-  const moved = cs ? mapLandmarks(cs, lm, W, H) : lm;
+  const moved = cs ? mapLandmarks(cs, lm, CW, CH) : lm;
   let residual = 0;
   if (cs) {
     lm.forEach((p, i) => {
       if (!p || !moved[i]) return;
       residual = Math.max(residual,
-        mapResidual(cs, p.x * W, p.y * H, moved[i].x * W, moved[i].y * H));
+        mapResidual(cs, p.x * CW, p.y * CH, moved[i].x * CW, moved[i].y * CH));
     });
   }
 
   const t0 = performance.now();
-  const uni = buildUnibrow(octx, moved, W, H, { ...opts, seed });
+  const uni = buildUnibrow(octx, moved, CW, CH, { ...opts, seed });
   const build = performance.now() - t0;
 
   setState("result");
@@ -237,6 +243,8 @@ export function runDemo({ shot, ctx, original, octx, setState, say, opts }) {
     warped: !!cs,
     residual: +residual.toFixed(3),
     warpMs: +warpMs.toFixed(1),
+    size: `${CW}x${CH}`,
+    clock: uni.clock,
     buildMs: +build.toFixed(1),
     paintMs: +paint.toFixed(1),
   };
