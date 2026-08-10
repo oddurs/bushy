@@ -114,6 +114,12 @@ without a webcam and a human. Open `?demo=1` and add `&wavy=1`, `&glasses=1`, `&
 `&hair=c9a86a`, or `&p=0.4` to freeze the reveal partway. It's seeded, so renders are
 byte-reproducible and comparable across changes. Nothing in the app imports it.
 
+## Notes
+
+[`docs/hardening.md`](docs/hardening.md) — research on the app's failure modes: camera
+lifecycle on iOS, canvas memory ceilings, the CDN dependency, and what a test suite should
+cover. Survey, not changelog; none of it is implemented yet.
+
 ## Licence
 
 MIT
