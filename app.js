@@ -214,17 +214,7 @@ async function shoot() {
 
   setState("result");
   await reveal();
-  report();
   els.retake.hidden = els.download.hidden = els.compare.hidden = false;
-}
-
-function report() {
-  const hairs = brows.reduce((n, b) => n + b.strandCount, 0);
-  const wave = brows.reduce((n, b) => n + b.waviness, 0) / brows.length;
-  const texture = wave > 0.55 ? "wavy" : wave > 0.32 ? "with a kink" : "straight";
-  say(brows.length > 1
-    ? `${brows.length} victims · ${hairs.toLocaleString()} new hairs`
-    : `${hairs.toLocaleString()} new hairs, ${texture}, matched to your own`);
 }
 
 // ---------------------------------------------------------------- controls
