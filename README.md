@@ -64,6 +64,18 @@ bushiness jitters, strands reshuffle, and the asymmetric cues flip direction. It
 rather than live-random because the reveal repaints every frame, and true randomness would
 make the caterpillar shimmer as it grows.
 
+## On a phone
+
+Built for it. The capture reproduces the `object-fit: cover` crop exactly, so the saved
+photo is the photo you framed rather than the whole sensor — without that, a portrait phone
+saves something quite different from what it showed you. The camera stream is requested in
+the screen's orientation, because cropping a landscape stream to a tall frame throws away
+most of the pixels and leaves too little face to measure a brow from.
+
+Saving goes through the share sheet where that exists, since an `<a download>` on iOS tends
+to just open the image. Front and rear cameras both work (only the front one is mirrored),
+the layout respects safe-area insets and `dvh`, and it's installable to the home screen.
+
 ## Running it
 
 Any static server over `localhost` (cameras need a secure context):

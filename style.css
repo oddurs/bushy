@@ -3,12 +3,17 @@
 html, body {
   margin: 0;
   height: 100%;
+  /* dvh tracks the collapsing mobile URL bar; the 100% above is the fallback. */
+  height: 100dvh;
   background: #000;
   overflow: hidden;
+  overscroll-behavior: none;
   font: 16px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
   color: #fff;
   -webkit-user-select: none;
   user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
 }
 
 .stage {
@@ -27,9 +32,9 @@ html, body {
   display: block;
 }
 
-/* the live preview is mirrored so it behaves like a mirror; the capture is
-   mirrored to match, so landmark space and display space always agree. */
-#video { transform: scaleX(-1); }
+/* The front camera behaves like a mirror; the capture is cropped and mirrored
+   to match, so what you framed is what you get. Rear camera is never mirrored. */
+#video.mirror { transform: scaleX(-1); }
 
 .stage[data-state="loading"] #shot,
 .stage[data-state="live"] #shot,
@@ -53,7 +58,7 @@ html, body {
 .stage[data-state="counting"] .countdown { display: flex; }
 
 .countdown span {
-  font-size: min(38vh, 42vw);
+  font-size: min(34vh, 46vw);
   font-weight: 800;
   line-height: 1;
   color: #fff;
@@ -92,6 +97,7 @@ html, body {
   gap: 1rem;
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   text-align: center;
   padding: 2rem;
 }
@@ -113,13 +119,40 @@ html, body {
 
 #overlay-msg { margin: 0; max-width: 30ch; opacity: 0.85; }
 
+/* ---- camera flip ---- */
+
+.flip {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 1rem);
+  right: calc(env(safe-area-inset-right, 0px) + 1rem);
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #fff;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.flip:active { transform: scale(0.94); }
+
+.stage[data-state="result"] .flip,
+.stage[data-state="working"] .flip,
+.stage[data-state="counting"] .flip,
+.stage[data-state="error"] .flip { display: none; }
+
 /* ---- controls ---- */
 
 .controls {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 2rem);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 1.75rem);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -129,18 +162,18 @@ html, body {
 .controls > * { pointer-events: auto; }
 
 .shutter {
-  width: 76px;
-  height: 76px;
+  width: 78px;
+  height: 78px;
   border-radius: 50%;
   border: 4px solid rgba(255, 255, 255, 0.9);
   background: rgba(255, 255, 255, 0.95);
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.25), 0 10px 30px rgba(0, 0, 0, 0.4);
   cursor: pointer;
   padding: 0;
+  touch-action: manipulation;
   transition: transform 0.12s ease, opacity 0.2s ease;
 }
-.shutter:hover:not(:disabled) { transform: scale(1.06); }
-.shutter:active:not(:disabled) { transform: scale(0.94); }
+.shutter:active:not(:disabled) { transform: scale(0.92); }
 .shutter:disabled { opacity: 0.35; cursor: default; }
 
 .stage[data-state="result"] .shutter,
@@ -150,16 +183,18 @@ html, body {
 .btn {
   font: inherit;
   font-weight: 600;
-  padding: 0.7rem 1.3rem;
+  min-height: 48px;
+  padding: 0.7rem 1.5rem;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.28);
   background: rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   color: #fff;
   cursor: pointer;
-  transition: background 0.15s ease, transform 0.12s ease;
+  touch-action: manipulation;
+  transition: transform 0.12s ease;
 }
-.btn:hover { background: rgba(0, 0, 0, 0.6); }
 .btn:active { transform: scale(0.97); }
 
 .status {
@@ -174,4 +209,11 @@ html, body {
   opacity: 0.72;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
   pointer-events: none;
+}
+
+/* Hover styles only where hovering is real -- on touch they stick after a tap. */
+@media (hover: hover) {
+  .shutter:hover:not(:disabled) { transform: scale(1.06); }
+  .btn:hover { background: rgba(0, 0, 0, 0.62); }
+  .flip:hover { background: rgba(0, 0, 0, 0.6); }
 }

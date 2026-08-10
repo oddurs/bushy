@@ -6,6 +6,11 @@ import { shotSeed } from "./rng.js";
 const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
+// Caps the captured photo's longest side. Phone cameras will happily hand over
+// something enormous, and every downstream cost -- the warp, the strand count,
+// each frame of the reveal -- scales with it.
+const MAX_SIDE = 1440;
+
 const $ = (id) => document.getElementById(id);
 const stage = $("stage");
 const video = $("video");
@@ -14,7 +19,7 @@ const ctx = shot.getContext("2d", { willReadFrequently: true });
 
 const els = {
   count: $("count"), flash: $("flash"), msg: $("overlay-msg"), status: $("status"),
-  shoot: $("shoot"), retake: $("retake"), download: $("download"),
+  shoot: $("shoot"), retake: $("retake"), download: $("download"), flip: $("flip"),
 };
 
 const params = new URLSearchParams(location.search);
@@ -35,6 +40,9 @@ const original = document.createElement("canvas");
 const octx = original.getContext("2d", { willReadFrequently: true });
 
 let landmarker = null;
+let stream = null;
+let facing = "user";
+let mirrored = true;
 let faces = [];   // landmarks of the distorted photo, one entry per person
 let brows = [];
 let seed = 0;     // one seed per shot, driving both the warp and the hair
@@ -59,11 +67,23 @@ async function loadLandmarker() {
   }
 }
 
-async function startCamera() {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 1280 }, height: { ideal: 960 }, facingMode: "user" },
+async function startCamera(mode = facing) {
+  stream?.getTracks().forEach((t) => t.stop());
+  // Ask for a stream shaped like the screen. Without this a portrait phone gets
+  // a landscape stream, and cropping it to a tall frame throws away most of the
+  // pixels -- leaving too little face to measure a brow from.
+  const portrait = innerHeight >= innerWidth;
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: mode,
+      width: { ideal: portrait ? 1080 : 1440 },
+      height: { ideal: portrait ? 1440 : 1080 },
+    },
     audio: false,
   });
+  facing = mode;
+  mirrored = mode === "user";
+  video.classList.toggle("mirror", mirrored);
   video.srcObject = stream;
   await video.play();
   if (!video.videoWidth) {
@@ -71,15 +91,25 @@ async function startCamera() {
   }
 }
 
+async function offerFlip() {
+  try {
+    // Device labels and the full list only appear once permission is granted.
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    els.flip.hidden = devices.filter((d) => d.kind === "videoinput").length < 2;
+  } catch {
+    els.flip.hidden = true;
+  }
+}
+
 function cameraProblem(err) {
   // Browsers hide getUserMedia entirely outside a secure context, which shows up
   // as a confusing "undefined" rather than a permission error.
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-    return `Cameras only work on https:// or localhost. Open this page at http://127.0.0.1:${location.port || 80} instead of ${location.hostname}.`;
+    return "Cameras only work over https:// or on localhost.";
   }
   switch (err?.name) {
     case "NotAllowedError": return "No camera access, no caterpillar. Allow the camera and reload.";
-    case "NotFoundError": return "No camera found on this machine.";
+    case "NotFoundError": return "No camera found on this device.";
     case "NotReadableError": return "Something else is holding the camera — close it and reload.";
     default: return `Couldn't start: ${err?.message || err}`;
   }
@@ -99,6 +129,7 @@ async function boot() {
     setState("live");
     els.shoot.disabled = false;
     say("");
+    offerFlip();
   } catch (err) {
     setState("error");
     els.msg.textContent = cameraProblem(err);
@@ -108,8 +139,9 @@ async function boot() {
 // ---------------------------------------------------------------- capture
 
 function beep(freq) {
+  const ac = beep.ac;
+  if (!ac) return;
   try {
-    const ac = beep.ac ||= new (window.AudioContext || window.webkitAudioContext)();
     const osc = ac.createOscillator();
     const gain = ac.createGain();
     osc.frequency.value = freq;
@@ -122,15 +154,34 @@ function beep(freq) {
   } catch { /* audio is a nicety, never a blocker */ }
 }
 
+// iOS only lets audio start from inside a user gesture, so the context is
+// created and resumed on the tap itself rather than lazily mid-countdown.
+function unlockAudio() {
+  try {
+    beep.ac ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (beep.ac.state === "suspended") beep.ac.resume();
+  } catch { /* no audio, no problem */ }
+}
+
 function grabFrame() {
-  const w = video.videoWidth, h = video.videoHeight;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  // Reproduce the object-fit: cover crop exactly, so the saved photo is the
+  // photo that was framed rather than the whole sensor.
+  const aspect = stage.clientWidth / stage.clientHeight;
+  let sw = vw, sh = vh;
+  if (vw / vh > aspect) sw = vh * aspect;
+  else sh = vw / aspect;
+  const sx = (vw - sw) / 2, sy = (vh - sh) / 2;
+
+  const scale = Math.min(1, MAX_SIDE / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+
   original.width = shot.width = w;
   original.height = shot.height = h;
-  // Mirrored to match the preview, so what you saw is what you shot.
   octx.save();
-  octx.translate(w, 0);
-  octx.scale(-1, 1);
-  octx.drawImage(video, 0, 0, w, h);
+  if (mirrored) { octx.translate(w, 0); octx.scale(-1, 1); }
+  octx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
   octx.restore();
   ctx.drawImage(original, 0, 0);
 }
@@ -163,6 +214,7 @@ function reveal(duration = 950) {
 
 async function shoot() {
   els.shoot.disabled = true;
+  unlockAudio();
   setState("counting");
   for (const n of [3, 2, 1]) {
     els.count.textContent = n;
@@ -221,6 +273,16 @@ async function shoot() {
 
 els.shoot.addEventListener("click", shoot);
 
+els.flip.addEventListener("click", async () => {
+  els.flip.disabled = true;
+  try {
+    await startCamera(facing === "user" ? "environment" : "user");
+  } catch {
+    await startCamera(facing).catch(() => {});
+  }
+  els.flip.disabled = false;
+});
+
 els.retake.addEventListener("click", () => {
   faces = [];
   brows = [];
@@ -230,18 +292,35 @@ els.retake.addEventListener("click", () => {
   say("");
 });
 
-els.download.addEventListener("click", () => {
-  shot.toBlob((blob) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const t = new Date();
-    const stamp = [t.getFullYear(), t.getMonth() + 1, t.getDate(), t.getHours(), t.getMinutes(), t.getSeconds()]
-      .map((v, i) => String(v).padStart(i ? 2 : 4, "0"));
-    a.href = url;
-    a.download = `unibrow-${stamp.slice(0, 3).join("")}-${stamp.slice(3).join("")}.png`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, "image/png");
+function filename() {
+  const t = new Date();
+  const p = (v, n = 2) => String(v).padStart(n, "0");
+  return `bushy-${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}`
+    + `-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}.png`;
+}
+
+els.download.addEventListener("click", async () => {
+  const blob = await new Promise((r) => shot.toBlob(r, "image/png"));
+  if (!blob) return;
+  const file = new File([blob], filename(), { type: "image/png" });
+
+  // On a phone the share sheet is what people actually want -- save to Photos,
+  // send it to someone. An <a download> there tends to just open the image.
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      return;
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = file.name;
+  a.click();
+  URL.revokeObjectURL(url);
 });
 
 addEventListener("keydown", (e) => {

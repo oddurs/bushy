@@ -2,10 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bushy">
+<meta name="description" content="A webcam photobooth that grows you a unibrow built from your own hair.">
 <title>Bushy</title>
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐛</text></svg>">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
 </head>
 <body>
 
@@ -22,12 +30,21 @@
     <p id="overlay-msg"></p>
   </div>
 
+  <button id="flip" class="flip" hidden aria-label="Switch camera">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M2 12a10 10 0 0 1 17-7.2L21 7"></path>
+      <path d="M22 12a10 10 0 0 1-17 7.2L3 17"></path>
+      <path d="M21 3v4h-4M3 21v-4h4"></path>
+    </svg>
+  </button>
+
   <p id="status" class="status"></p>
 
   <div class="controls">
     <button id="shoot" class="shutter" disabled aria-label="Take photo"></button>
-    <button id="retake" class="btn ghost" hidden>Retake</button>
-    <button id="download" class="btn ghost" hidden>Save</button>
+    <button id="retake" class="btn" hidden>Retake</button>
+    <button id="download" class="btn" hidden>Save</button>
   </div>
 </div>
 

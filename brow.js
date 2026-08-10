@@ -508,7 +508,15 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
     });
   }
 
-  let spine = resample(smooth([...a, ...bridge, ...b], 2), spacing);
+  // Sample density is capped by count, not by pixel spacing. A phone capture
+  // can be several times the size of a laptop one, and fixed spacing would make
+  // the strand count -- and every frame of the reveal -- scale with it.
+  const coarse = smooth([...a, ...bridge, ...b], 2);
+  let run = 0;
+  for (let i = 1; i < coarse.length; i++) run += len(sub(coarse[i], coarse[i - 1]));
+  const step = Math.max(spacing, run / 420);
+
+  let spine = resample(coarse, step);
   spine = smooth(spine, 3);
 
   const N = spine.length;
@@ -521,7 +529,7 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
     return { ...p, tan, up, t0: p.t, t: p.t * bush * envelope(N > 1 ? i / (N - 1) : 0.5) };
   });
 
-  const strands = growStrands(spine, tone, waviness, rnd, { spacing });
+  const strands = growStrands(spine, tone, waviness, rnd, { spacing: step });
   const occluders = opts.occlude === false ? null : buildOccluders(srcCtx, spine, w, h);
 
   // The growth front starts at the bridge and creeps out to both tails, so the
