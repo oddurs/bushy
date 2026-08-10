@@ -485,18 +485,25 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
   const a = orientOutwardIn(first, centroid(second));
   const b = orientOutwardIn(second, centroid(first)).reverse();
 
-  // Bridge the gap, sagging very slightly to follow the brow ridge.
+  // Which way is away-from-the-eyes? That's "up" for every hair on the face.
+  const eyes = centroid(EYE_REF.map((i) => ({ x: lm[i].x * w, y: lm[i].y * h })));
+
+  // Bridge the gap. A real unibrow doesn't run straight across -- it dips
+  // toward the nose where the two brows meet, so the silhouette reads as one
+  // continuous curve with a low middle rather than a bar laid over the face.
+  // Bowing toward the eye centre keeps that true under head roll.
   const inA = a[a.length - 1], inB = b[0];
-  const gap = sub(inB, inA);
-  const across = norm({ x: -gap.y, y: gap.x });
+  const mid = { x: (inA.x + inB.x) / 2, y: (inA.y + inB.y) / 2 };
+  const down = norm(sub(eyes, mid));
+  const dip = len(sub(inB, inA)) * (opts.dip ?? 0.22);
   const bridge = [];
   const BRIDGE_STEPS = 12;
   for (let i = 1; i < BRIDGE_STEPS; i++) {
     const f = i / BRIDGE_STEPS;
-    const sag = Math.sin(Math.PI * f) * len(gap) * 0.05;
+    const sag = Math.sin(Math.PI * f) * dip;
     bridge.push({
-      x: lerp(inA.x, inB.x, f) + across.x * sag,
-      y: lerp(inA.y, inB.y, f) + across.y * sag,
+      x: lerp(inA.x, inB.x, f) + down.x * sag,
+      y: lerp(inA.y, inB.y, f) + down.y * sag,
       t: lerp(inA.t, inB.t, f) * 1.05,
     });
   }
@@ -504,8 +511,6 @@ export function buildUnibrow(srcCtx, lm, w, h, opts = {}) {
   let spine = resample(smooth([...a, ...bridge, ...b], 2), spacing);
   spine = smooth(spine, 3);
 
-  // Which way is away-from-the-eyes? That's "up" for every hair on the face.
-  const eyes = centroid(EYE_REF.map((i) => ({ x: lm[i].x * w, y: lm[i].y * h })));
   const N = spine.length;
   spine = spine.map((p, i) => {
     const prev = spine[Math.max(0, i - 1)];

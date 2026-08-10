@@ -26,6 +26,7 @@ const OPTS = {
   bush: num("bush", undefined),
   seed: parseInt(params.get("seed"), 10) || undefined,
   scalpMix: num("scalpMix", undefined),
+  dip: num("dip", undefined),
 };
 const WARP = num("warp", 1);
 
